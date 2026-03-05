@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -236,6 +237,15 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	if disabled {
 		status = cliproxyauth.StatusDisabled
 	}
+
+	// Calculate NextRefreshAfter from expires_at (20 minutes before expiry)
+	var nextRefreshAfter time.Time
+	if expiresAtStr, ok := metadata["expires_at"].(string); ok && expiresAtStr != "" {
+		if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
+			nextRefreshAfter = expiresAt.Add(-20 * time.Minute)
+		}
+	}
+
 	auth := &cliproxyauth.Auth{
 		ID:               id,
 		Provider:         provider,
@@ -248,7 +258,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		CreatedAt:        info.ModTime(),
 		UpdatedAt:        info.ModTime(),
 		LastRefreshedAt:  time.Time{},
-		NextRefreshAfter: time.Time{},
+		NextRefreshAfter: nextRefreshAfter,
 	}
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
@@ -257,14 +267,17 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 }
 
 func (s *FileTokenStore) idFor(path, baseDir string) string {
-	if baseDir == "" {
-		return path
+	id := path
+	if baseDir != "" {
+		if rel, errRel := filepath.Rel(baseDir, path); errRel == nil && rel != "" {
+			id = rel
+		}
 	}
-	rel, err := filepath.Rel(baseDir, path)
-	if err != nil {
-		return path
+	// On Windows, normalize ID casing to avoid duplicate auth entries caused by case-insensitive paths.
+	if runtime.GOOS == "windows" {
+		id = strings.ToLower(id)
 	}
-	return rel
+	return id
 }
 
 func (s *FileTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
